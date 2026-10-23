@@ -879,8 +879,10 @@ def check_email_command():
     mail_to = os.environ.get("MAIL_TO", "").strip()
     if not user or not passwd:
         return None
-    # 允许的指令发件人：发件小号（SMTP_USER）和收件主号（MAIL_TO）都算自己
-    allowed_senders = [x.lower() for x in (user, mail_to) if x]
+    # 指令只认「主号」（MAIL_TO）发出：主号发到小号，脚本登录小号信箱读取。
+    # 小号自己发的一律不认（小号只是发信机器，不给它下指令的权限）；
+    # 只有没配主号时，才退化为允许小号自己发。
+    allowed_senders = [mail_to.lower()] if mail_to else [user.lower()]
 
     conn = None
     try:
