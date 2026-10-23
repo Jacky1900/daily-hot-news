@@ -1119,4 +1119,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:  # noqa: BLE001
+        # 兜底：未捕获的异常也走脱敏，避免原始 traceback 带出 URL 参数（如百度 appid）等信息
+        log("脚本异常退出: %s" % e)
+        sys.exit(1)
