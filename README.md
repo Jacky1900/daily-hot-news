@@ -6,7 +6,7 @@
 
 **分工：微信用来扫标题，邮件用来读详情。**
 
-- 定时：北京时间每天 **06:37 / 22:37**（特意避开整点，整点最容易被 GitHub 排队延迟）
+- 定时：**晚上 22:37** 由 GitHub 自动运行；**早上 06:37** 由 cron-job.org 调接口触发（两条腿走路，早上更准时）
 - **微信收到 1 条消息**：三类全部 30 条标题，**自动翻译成中文**（用 Google 免费翻译，不用配置）
 - **邮件收到 1 封详细报告**：英文标题 + **英文摘要**，想看中文直接用 **QQ 邮箱自带的「翻译邮件」**（网页版右上角 / App 里都有）
 - 点标题直接跳原文
@@ -192,6 +192,49 @@ Google News 查询 `Hengrui OR "Jiangsu Hengrui" OR "恒瑞医药"`，专门捞�
 5. 同时微信应该收到 1 条消息（三类全部标题），邮箱收到 1 封邮件
 
 之后每天自动运行，不用管它。
+
+---
+
+## 用 cron-job.org 精确触发早上那次
+
+GitHub 自带的定时会排队延迟（尤其整点），所以早上这次改成 **cron-job.org 调 API 触发**，精确到分钟。
+
+**第一步：准备一个 GitHub Token**
+
+- 打开 https://github.com/settings/tokens → **Generate new token**
+- 选 **Fine-grained token**（推荐）：
+  - Repository access：只选 `daily-hot-news`
+  - Permissions → **Actions** 选 `Read and write`
+- 或选 **Classic token**：勾选 `workflow` 这一项
+- 生成后复制（`github_pat_` 或 `ghp_` 开头），**只显示一次**
+
+**第二步：在 cron-job.org 建任务**
+
+- 地址填：
+  ```
+  https://api.github.com/repos/Jacky1900/daily-hot-news/actions/workflows/news.yml/dispatches
+  ```
+- 方法：**POST**
+- Headers 加三条：
+
+  | Key | Value |
+  |---|---|
+  | `Authorization` | `Bearer 你的token` |
+  | `Accept` | `application/vnd.github+json` |
+  | `Content-Type` | `application/json` |
+
+- Request body：
+  ```json
+  {"ref":"main"}
+  ```
+- 执行时间：**每天 06:37**，时区选 **Asia/Shanghai**
+- 保存后可以点 "TEST RUN"，返回 **204** 就表示触发成功
+
+**注意：**
+
+- Token 会过期（fine-grained 最长 1 年），过期后要重新生成并更新到 cron-job.org
+- 这个 Token 只放在 cron-job.org，**不用填进 GitHub Secrets**，和仓库里的密钥是两套东西
+- 如果 cron-job.org 某天没触发，晚上 22:37 那次 GitHub 定时还会正常跑，不会一天都没有
 
 ---
 

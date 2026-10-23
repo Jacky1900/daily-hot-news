@@ -2,11 +2,11 @@ name: Daily Hot News
 
 on:
   schedule:
-    # GitHub cron 用 UTC 时间（北京时间 = UTC + 8 小时）
-    # 特意避开整点：整点是全球定时任务最集中的时刻，GitHub 会排队延迟十几分钟
-    - cron: "37 22 * * *"    # 北京 06:37
+    # 只保留「晚上」这一次自动运行（北京时间 22:37）
+    # 早上 6:37 由 cron-job.org 调用 workflow_dispatch 接口触发，不占 GitHub 定时任务
+    # 分钟特意取 37 避开整点：整点全球定时任务最挤，GitHub 排队会延迟十几分钟
     - cron: "37 14 * * *"    # 北京 22:37
-  workflow_dispatch:        # 允许网页手动点 "Run workflow" / cron-job.org 调接口触发
+  workflow_dispatch:          # 网页手动触发 / cron-job.org 调接口触发
 
 permissions:
   contents: write           # 允许 Actions 把"已推送记录"写回仓库
