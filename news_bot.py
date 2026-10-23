@@ -876,8 +876,11 @@ def check_email_command():
     """
     user = os.environ.get("SMTP_USER", "").strip()
     passwd = os.environ.get("SMTP_PASS", "").strip()
+    mail_to = os.environ.get("MAIL_TO", "").strip()
     if not user or not passwd:
         return None
+    # 允许的指令发件人：发件小号（SMTP_USER）和收件主号（MAIL_TO）都算自己
+    allowed_senders = [x.lower() for x in (user, mail_to) if x]
 
     conn = None
     try:
@@ -907,7 +910,7 @@ def check_email_command():
             if norm not in (STOP_SUBJECT, RESUME_SUBJECT):
                 continue
             # 只接受自己邮箱发来的指令：防止任何人（知道口令是 stop）发一封邮件就把你的推送停掉
-            if sender and user.lower() not in sender:
+            if sender and not any(a in sender for a in allowed_senders):
                 log("  邮箱指令：忽略非本人发来的指令（发件人 %s）" % mask_email(sender))
                 continue
 
