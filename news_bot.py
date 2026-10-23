@@ -496,7 +496,11 @@ def merge_and_rank(items):
         it = dict(it)
         if hr:
             it["score"] += HENGRUI_BONUS  # 保证恒瑞新闻排进榜单
-        it["key"] = k
+            it["hengrui"] = True          # 打标记：生物医药推送时单独追加在 10 条后面
+        # 超长链接惩罚：Google News 的跳转链有 300~500 字符，会把推送消息撑爆、
+        # 还会让 markdown 单行过长渲染失败，所以降权让它排在后面
+        if len(it.get("url") or "") > 200:
+            it["score"] -= 20
         it["key"] = k
         if k in by_key:
             old = by_key[k]
@@ -525,7 +529,9 @@ def merge_and_rank(items):
         ranked[cat].append(it)
     for cat in ranked:
         ranked[cat].sort(key=lambda x: x["score"], reverse=True)
-        ranked[cat] = diversify(ranked[cat], TOP_N[cat])
+        # 生物医药多留一些候选，供"10 条常规 + 恒瑞追加"使用
+        limit = TOP_N[cat] + 15 if cat == "pharma" else TOP_N[cat]
+        ranked[cat] = diversify(ranked[cat], limit)
     if n_china or n_hengrui:
         log("  过滤涉华报道 %d 条 | 恒瑞医药白名单保留 %d 条" % (n_china, n_hengrui))
     return ranked
@@ -695,26 +701,50 @@ def translate_titles(texts):
 
 # ---------------- 渲染 ----------------
 
-def render_pushplus(ranked, trans, run_time):
-    """微信推送：三类全部标题合并成一条消息，只放标题+中文，摘要细节走邮件。"""
-    total = sum(len(v) for v in ranked.values())
+def _render_lines(lines, items, trans):
+    """渲染一组条目。超长链接（Google News 跳转链）单独占一行，避免单行过长导致 markdown 渲染失败。"""
+    for i, it in enumerate(items, 1):
+        title = clean_md(it["title"])
+        url = it["url"]
+        zh = trans.get(it["title"])
+        if len(url) > 200:
+            lines.append("%d. **%s**" % (i, title))
+            if zh:
+                lines.append("   %s" % clean_md(zh))
+            lines.append("   [原文链接](%s)" % url)
+        else:
+            lines.append("%d. **[%s](%s)**" % (i, title, url))
+            if zh:
+                lines.append("   %s" % clean_md(zh))
+
+
+def render_pushplus(sections, trans, run_time):
+    """
+    微信推送：只放标题 + 中文译文，摘要走邮件。
+    sections = [(分类key, [条目...]), ...]，一次推送可以只含一到两类。
+    恒瑞相关条目在生物医药里自动单独成一节。
+    """
+    total = sum(len(items) for _, items in sections)
+    cat_names = " + ".join(CATEGORIES[c] for c, _ in sections if c in CATEGORIES)
     lines = [
-        "## 🌐 每日热点 %d 条 · 全部标题" % total,
+        "## 🌐 每日热点 %d 条 · %s" % (total, cat_names),
         "> %s 更新 · 24小时全球热度榜 · 摘要详见邮件" % run_time,
         "",
     ]
-    for cat, cn in CATEGORIES.items():
-        items = ranked.get(cat) or []
+    for cat, items in sections:
         if not items:
             continue
-        lines.append("### %s %s · %d条" % (CAT_EMOJI.get(cat, ""), cn, len(items)))
-        for i, it in enumerate(items, 1):
-            title = clean_md(it["title"])
-            zh = trans.get(it["title"])
-            lines.append("%d. **[%s](%s)**" % (i, title, it["url"]))
-            if zh:
-                lines.append("   %s" % clean_md(zh))
-        lines.append("")
+        cn = CATEGORIES.get(cat, cat)
+        hengrui = [x for x in items if x.get("hengrui")]
+        normal = [x for x in items if not x.get("hengrui")]
+        if normal:
+            lines.append("### %s %s · %d条" % (CAT_EMOJI.get(cat, ""), cn, len(normal)))
+            _render_lines(lines, normal, trans)
+            lines.append("")
+        if hengrui:
+            lines.append("### 🎯 恒瑞医药 · %d条" % len(hengrui))
+            _render_lines(lines, hengrui, trans)
+            lines.append("")
 
     text = "\n".join(lines)
     if len(text) > MAX_PUSH_CHARS:
@@ -1057,10 +1087,26 @@ def main():
             if skipped:
                 log("  %s：跳过今天已推送的 %d 条" % (CATEGORIES[cat], skipped))
 
+    # 生物医药：10 条常规 + 恒瑞相关单独追加（恒瑞不占用 10 条名额）
+    pharma_all = ranked.get("pharma") or []
+    pharma_normal = [x for x in pharma_all if not x.get("hengrui")][:TOP_N["pharma"]]
+    pharma_hengrui = [x for x in pharma_all if x.get("hengrui")]
+    pharma_final = pharma_normal + pharma_hengrui
+    if pharma_hengrui:
+        log("  生物医药：%d 条常规 + %d 条恒瑞相关 = %d 条"
+            % (len(pharma_normal), len(pharma_hengrui), len(pharma_final)))
+
+    # 最终清单：邮件和微信都用它
+    final = {
+        "finance": ranked.get("finance") or [],
+        "ai": ranked.get("ai") or [],
+        "pharma": pharma_final,
+    }
+
     # 只翻译微信要用的标题；邮件保持英文原文（靠 QQ 邮箱自带的"翻译邮件"功能看中文）
     all_titles = []
-    for cat in ranked:
-        for it in ranked[cat]:
+    for cat in final:
+        for it in final[cat]:
             if it["title"] not in all_titles:
                 all_titles.append(it["title"])
     trans = translate_titles(all_titles)
@@ -1068,11 +1114,13 @@ def main():
     # dry-run：打印结果（同样走脱敏，避免输出被贴到 issue/聊天时意外带出凭证）
     if args.dry_run:
         for cat, cn in CATEGORIES.items():
+            items_preview = final.get(cat) or []
             print(redact("\n" + "=" * 60))
-            print(redact("%s %s TOP %d" % (CAT_EMOJI[cat], cn, len(ranked[cat]))))
+            print(redact("%s %s · %d 条" % (CAT_EMOJI[cat], cn, len(items_preview))))
             print(redact("=" * 60))
-            for i, it in enumerate(ranked[cat], 1):
-                print(redact("%2d. %s" % (i, it["title"])))
+            for i, it in enumerate(items_preview, 1):
+                tag = " [恒瑞]" if it.get("hengrui") else ""
+                print(redact("%2d. %s%s" % (i, it["title"], tag)))
                 zh = trans.get(it["title"])
                 if zh:
                     print(redact("    → %s" % zh))
@@ -1087,32 +1135,44 @@ def main():
         print(redact("\n[dry-run] 不推送。配置 Key 后去掉 --dry-run 即为正式运行。"))
         return
 
-    # 正式推送：微信一条（全部标题，速览），邮件一封（含摘要，详读）
+    # 正式推送：微信分两条（金融+AI / 生物医药+恒瑞），邮件一封（含摘要）
     pushplus_token = os.environ.get("PUSHPLUS_TOKEN", "").strip()
     ok_any = False
-    total_items = sum(len(v) for v in ranked.values())
 
     if pushplus_token:
-        if total_items:
-            content = render_pushplus(ranked, trans, run_time)
-            title = "🌐 每日热点 %d 条 · 金融/AI/生物医药 · %s" % (total_items, run_time)
+        # 第一条：金融 + AI
+        sec1 = [("finance", final["finance"]), ("ai", final["ai"])]
+        n1 = sum(len(x) for _, x in sec1)
+        if n1:
+            content = render_pushplus(sec1, trans, run_time)
+            title = "📈🤖 金融+AI %d 条 · %s" % (n1, run_time)
             if send_pushplus(pushplus_token, title, content):
                 ok_any = True
-                for cat in ranked:
-                    for it in ranked[cat]:
+                for _, items in sec1:
+                    for it in items:
                         pushed_keys.add(it["key"])
+
+        # 第二条：生物医药 + 恒瑞
+        if pharma_final:
+            sec2 = [("pharma", pharma_final)]
+            title = "🧬 生物医药 %d 条 · %s" % (len(pharma_final), run_time)
+            content = render_pushplus(sec2, trans, run_time)
+            if send_pushplus(pushplus_token, title, content):
+                ok_any = True
+                for it in pharma_final:
+                    pushed_keys.add(it["key"])
     else:
         log("未配置 PUSHPLUS_TOKEN，跳过微信推送")
 
-    total = sum(len(v) for v in ranked.values())
+    total = sum(len(v) for v in final.values())
     if total:
         subject = "【每日热点】金融/AI/生物医药 · %s" % run_time
-        if send_email(subject, render_email_html(ranked, run_time)):
+        if send_email(subject, render_email_html(final, run_time)):
             ok_any = True
-            # 邮件里已经包含了这三类的全部条目，必须一并记入"已推送"，
-            # 否则只配邮件不配微信时，同一天三次会重复推送同样的新闻。
-            for cat in ranked:
-                for it in ranked[cat]:
+            # 邮件里已经包含了全部条目，必须一并记入"已推送"，
+            # 否则只配邮件不配微信时，同一天多次会重复推送同样的新闻。
+            for cat in final:
+                for it in final[cat]:
                     pushed_keys.add(it["key"])
     else:
         log("三类都没有新内容（今天已全部推送过），不发送")
