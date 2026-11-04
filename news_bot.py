@@ -842,50 +842,70 @@ def render_pushplus(sections, trans, run_time):
     return text
 
 
-def render_email_html(ranked, run_time):
-    """邮件：保持英文原文（标题 + 摘要），中文靠 QQ 邮箱自带的"翻译邮件"功能。"""
+def render_email_html(sections, run_time):
+    """
+    邮件：保持英文原文（标题 + 摘要），中文靠 QQ 邮箱自带的"翻译邮件"功能。
+    sections = [(分类key, [条目...]), ...]，可以把三类拆成两封邮件（金融+AI / 生物医药），
+    每封更短，手机邮箱加载和翻译都更完整。
+    """
+    total = sum(len(items) for _, items in sections)
+    cat_names = " / ".join(CATEGORIES[c] for c, _ in sections if c in CATEGORIES)
     parts = [
         "<html><body style='margin:0;padding:24px;background:#f2f3f5;'>",
         "<div style='max-width:760px;margin:0 auto;background:#ffffff;border-radius:10px;padding:28px;font-family:Arial,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;'>",
-        "<h2 style='margin:0 0 4px;'>🌐 每日全球热点 · %s</h2>" % run_time,
-        "<p style='color:#888;margin:0 0 8px;'>金融股票 / AI科技 / 生物医药科技 · 过去 24 小时热度榜 · 中文请用邮箱自带的翻译功能</p>",
+        "<h2 style='margin:0 0 4px;'>🌐 每日全球热点 · %d 条</h2>" % total,
+        "<p style='color:#888;margin:0 0 8px;'>%s · %s · 中文请用邮箱自带的翻译功能</p>" % (cat_names, run_time),
         "<p style='color:#bbb;font-size:12px;margin:0 0 24px;'>每条的导语已摘录在标题下方，不必点链接也能看懂大意；外媒原站部分在国内可能打不开。</p>",
     ]
-    for cat, cn in CATEGORIES.items():
-        items = ranked.get(cat) or []
+    for cat, items in sections:
         if not items:
             continue
-        parts.append(
-            "<h3 style='border-left:4px solid #d43f3a;padding-left:8px;margin:24px 0 12px;'>%s %s</h3>"
-            % (CAT_EMOJI.get(cat, ""), cn)
-        )
-        parts.append("<table style='width:100%;border-collapse:collapse;font-size:14px;'>")
-        for i, it in enumerate(items, 1):
-            summary = it.get("summary") or ""
-            sum_html = ""
-            if summary:
-                sum_html = (
-                    "<div style='color:#555;font-size:13px;margin-top:8px;line-height:1.55;'>%s</div>"
-                    % html.escape(summary)
-                )
-            meta = "%s · %s" % (html.escape(it["source"]), fmt_age(it["ts"]))
-            if it.get("multi"):
-                meta += " · %d家报道" % (it["multi"] + 1)
-            if it.get("base_score", 0) >= 100:
-                meta += " · 热度%d" % int(it["base_score"])
+        cn = CATEGORIES.get(cat, cat)
+        hengrui = [x for x in items if x.get("hengrui")]
+        normal = [x for x in items if not x.get("hengrui")]
+        if normal:
             parts.append(
-                "<tr><td style='padding:12px 4px;border-bottom:1px solid #eee;vertical-align:top;width:28px;color:#999;'>%d</td>"
-                "<td style='padding:12px 4px;border-bottom:1px solid #eee;'>"
-                "<a href='%s' style='color:#1a0dab;text-decoration:none;font-weight:bold;font-size:15px;'>%s</a>%s"
-                "<div style='color:#aaa;font-size:12px;margin-top:6px;'>%s</div></td></tr>"
-                % (i, html.escape(it["url"]), html.escape(it["title"]), sum_html, meta)
+                "<h3 style='border-left:4px solid #d43f3a;padding-left:8px;margin:24px 0 12px;'>%s %s</h3>"
+                % (CAT_EMOJI.get(cat, ""), cn)
             )
-        parts.append("</table>")
+            parts.extend(_email_rows(normal))
+        if hengrui:
+            parts.append(
+                "<h3 style='border-left:4px solid #d43f3a;padding-left:8px;margin:24px 0 12px;'>🎯 恒瑞医药</h3>"
+            )
+            parts.extend(_email_rows(hengrui))
     parts.append(
-        "<p style='color:#bbb;font-size:12px;margin-top:28px;'>由 GitHub Actions 自动生成 · 数据来源：Hacker News / Reddit / Google News / MarketWatch / CNBC / TechCrunch / Endpoints / STAT 等</p>"
+        "<p style='color:#bbb;font-size:12px;margin-top:28px;'>由 GitHub Actions 自动生成 · 数据来源：Hacker News / Reddit / Google News / MarketWatch / CNBC / Nasdaq / TechCrunch / Ars Technica / Endpoints / STAT / BioPharma Dive / Labiotech 等</p>"
         "</div></body></html>"
     )
     return "".join(parts)
+
+
+def _email_rows(items):
+    """生成一段表格行（一个分类下的条目）。"""
+    rows = ["<table style='width:100%;border-collapse:collapse;font-size:14px;'>"]
+    for i, it in enumerate(items, 1):
+        summary = it.get("summary") or ""
+        sum_html = ""
+        if summary:
+            sum_html = (
+                "<div style='color:#333;font-size:14px;margin-top:8px;line-height:1.6;'>%s</div>"
+                % html.escape(summary)
+            )
+        meta = "%s · %s" % (html.escape(it["source"]), fmt_age(it["ts"]))
+        if it.get("multi"):
+            meta += " · %d家报道" % (it["multi"] + 1)
+        if it.get("base_score", 0) >= 100:
+            meta += " · 热度%d" % int(it["base_score"])
+        rows.append(
+            "<tr><td style='padding:12px 4px;border-bottom:1px solid #eee;vertical-align:top;width:28px;color:#999;'>%d</td>"
+            "<td style='padding:12px 4px;border-bottom:1px solid #eee;'>"
+            "<a href='%s' style='color:#1a0dab;text-decoration:none;font-weight:bold;font-size:15px;'>%s</a>%s"
+            "<div style='color:#aaa;font-size:12px;margin-top:6px;'>%s</div></td></tr>"
+            % (i, html.escape(it["url"]), html.escape(it["title"]), sum_html, meta)
+        )
+    rows.append("</table>")
+    return rows
 
 
 # ---------------- 推送 ----------------
@@ -1260,15 +1280,25 @@ def main():
     else:
         log("未配置 PUSHPLUS_TOKEN，跳过微信推送")
 
+    # 邮件也分两封：金融+AI 一封、生物医药+恒瑞 一封
+    # （单封太长时手机邮箱会折叠/懒加载，后半部分容易显示不全）
     total = sum(len(v) for v in final.values())
     if total:
-        subject = "【每日热点】金融/AI/生物医药 · %s" % run_time
-        if send_email(subject, render_email_html(final, run_time)):
-            ok_any = True
-            # 邮件里已经包含了全部条目，必须一并记入"已推送"，
-            # 否则只配邮件不配微信时，同一天多次会重复推送同样的新闻。
-            for cat in final:
-                for it in final[cat]:
+        mail1 = [("finance", final["finance"]), ("ai", final["ai"])]
+        n_mail1 = sum(len(x) for _, x in mail1)
+        if n_mail1:
+            subject1 = "【每日热点】金融+AI %d 条 · %s" % (n_mail1, run_time)
+            if send_email(subject1, render_email_html(mail1, run_time)):
+                ok_any = True
+                for _, items in mail1:
+                    for it in items:
+                        pushed_keys.add(it["key"])
+
+        if pharma_final:
+            subject2 = "【每日热点】生物医药 %d 条 · %s" % (len(pharma_final), run_time)
+            if send_email(subject2, render_email_html([("pharma", pharma_final)], run_time)):
+                ok_any = True
+                for it in pharma_final:
                     pushed_keys.add(it["key"])
     else:
         log("三类都没有新内容（今天已全部推送过），不发送")
