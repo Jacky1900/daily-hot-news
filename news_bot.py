@@ -292,8 +292,8 @@ def clean_md(text):
     return re.sub(r"[`\[\]{}|*#]", "", text or "").strip()
 
 
-def clean_summary(raw, max_len=200):
-    """把 RSS 的 description（HTML 片段）清成纯文本摘要。"""
+def clean_summary(raw, max_len=800):
+    """把 RSS 的 description（HTML 片段）清成纯文本摘要。默认保留 800 字符，够读一段完整导语。"""
     if not raw:
         return ""
     t = re.sub(r"<script.*?</script>", " ", raw, flags=re.S | re.I)
@@ -304,6 +304,81 @@ def clean_summary(raw, max_len=200):
     if len(t) > max_len:
         t = t[:max_len].rstrip() + "…"
     return t
+
+
+def fetch_page_description(url, timeout=8):
+    """
+    抓文章页的 og:description / meta description，给没有摘要的条目补充正文导语。
+    顺便把 Google News 的跳转链换成真实文章地址（跳转链在国内打不开，真实地址至少能开）。
+    返回 (描述, 最终地址)。
+    """
+    if not url:
+        return "", url
+    try:
+        req = urllib.request.Request(url, headers=UA)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            final_url = r.geturl() or url
+            raw = r.read(300000).decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return "", url
+
+    desc = ""
+    for pat in (
+        r'<meta[^>]+property=["\']og:description["\'][^>]*content=["\']([^"\']{30,})',
+        r'<meta[^>]+content=["\']([^"\']{30,})["\'][^>]*property=["\']og:description["\']',
+        r'<meta[^>]+name=["\']description["\'][^>]*content=["\']([^"\']{30,})',
+    ):
+        m = re.search(pat, raw, re.I)
+        if m:
+            desc = clean_summary(html.unescape(m.group(1)))
+            break
+
+    # 描述太短就再补一段正文（取第一个像样的段落），让邮件里能读到实质内容
+    if len(desc) < 400:
+        for p in re.findall(r"<p[^>]*>(.*?)</p>", raw, re.S | re.I)[:12]:
+            t = clean_summary(p, max_len=500)
+            if len(t) >= 120:
+                desc = (desc + " " + t).strip() if desc else t
+                break
+    return desc, final_url
+
+
+def enrich_summaries(items, min_len=80):
+    """
+    给摘要太短的条目并发抓取网页描述，并把 Google News 跳转链换成真实地址。
+    只对最终要推送的条目做（约 30 条），6 线程并发，单条超时 8 秒，失败不影响推送。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    targets = [
+        it for it in items
+        if len(it.get("summary") or "") < min_len or "news.google.com" in (it.get("url") or "")
+    ]
+    if not targets:
+        return 0
+
+    def work(it):
+        desc, final_url = fetch_page_description(it.get("url"))
+        changed = False
+        if desc and len(desc) > len(it.get("summary") or ""):
+            it["summary"] = desc
+            changed = True
+        # Google News 跳转链 -> 真实文章地址
+        if final_url and final_url != it.get("url") and "news.google.com" not in final_url:
+            it["url"] = final_url
+            changed = True
+        return changed
+
+    ok = 0
+    try:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for r in ex.map(work, targets):
+                if r:
+                    ok += 1
+    except Exception as e:  # noqa: BLE001
+        log("  摘要补全异常: %s" % e)
+    log("  摘要/链接修复：%d/%d 条有更新" % (ok, len(targets)))
+    return ok
 
 
 def fmt_age(ts):
@@ -758,7 +833,8 @@ def render_email_html(ranked, run_time):
         "<html><body style='margin:0;padding:24px;background:#f2f3f5;'>",
         "<div style='max-width:760px;margin:0 auto;background:#ffffff;border-radius:10px;padding:28px;font-family:Arial,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;'>",
         "<h2 style='margin:0 0 4px;'>🌐 每日全球热点 · %s</h2>" % run_time,
-        "<p style='color:#888;margin:0 0 24px;'>金融股票 / AI科技 / 生物医药科技 · 过去 24 小时热度 TOP 10 · 中文请用邮箱自带的翻译功能</p>",
+        "<p style='color:#888;margin:0 0 8px;'>金融股票 / AI科技 / 生物医药科技 · 过去 24 小时热度榜 · 中文请用邮箱自带的翻译功能</p>",
+        "<p style='color:#bbb;font-size:12px;margin:0 0 24px;'>每条的导语已摘录在标题下方，不必点链接也能看懂大意；外媒原站部分在国内可能打不开。</p>",
     ]
     for cat, cn in CATEGORIES.items():
         items = ranked.get(cat) or []
@@ -1102,6 +1178,11 @@ def main():
         "ai": ranked.get("ai") or [],
         "pharma": pharma_final,
     }
+
+    # 邮件要能"读到内容"，所以给摘要太短的条目补抓网页导语（约 30 条，并发 6 线程）
+    if not args.dry_run:
+        all_items = [it for cat in final for it in final[cat]]
+        enrich_summaries(all_items)
 
     # 只翻译微信要用的标题；邮件保持英文原文（靠 QQ 邮箱自带的"翻译邮件"功能看中文）
     all_titles = []
