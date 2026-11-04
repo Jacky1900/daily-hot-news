@@ -335,17 +335,28 @@ def fetch_page_description(url, timeout=8):
 
     # 描述太短就再补一段正文（取第一个像样的段落），让邮件里能读到实质内容
     if len(desc) < 400:
+        nav_noise = (
+            "topic hubs", "newsletter", "subscribe", "sign in", "sign up",
+            "advertisement", "cookie", "follow us", "all rights reserved",
+            "privacy policy", "terms of service",
+        )
         for p in re.findall(r"<p[^>]*>(.*?)</p>", raw, re.S | re.I)[:12]:
             t = clean_summary(p, max_len=500)
-            if len(t) >= 120:
-                desc = (desc + " " + t).strip() if desc else t
-                break
+            if len(t) < 120:
+                continue
+            low = t.lower()
+            if any(bad in low for bad in nav_noise):
+                continue  # 跳过导航/订阅提示之类的段落
+            desc = (desc + " " + t).strip() if desc else t
+            break
     return desc, final_url
 
 
-def enrich_summaries(items, min_len=80):
+def enrich_summaries(items, min_len=300):
     """
     给摘要太短的条目并发抓取网页描述，并把 Google News 跳转链换成真实地址。
+    阈值 300 字符：RSS 自带的 description 往往只有一两句（80~200 字符），
+    对着"详细内容"的预期还是太短，所以统一补抓到 300 字符以上。
     只对最终要推送的条目做（约 30 条），6 线程并发，单条超时 8 秒，失败不影响推送。
     """
     from concurrent.futures import ThreadPoolExecutor
