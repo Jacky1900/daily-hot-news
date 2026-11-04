@@ -191,6 +191,7 @@ RSS_FEEDS = [
     ("https://www.biopharmadive.com/feeds/news/", "pharma", "BioPharma Dive"),
     ("https://www.statnews.com/feed/", "pharma", "STAT"),
     # 战争/军事类
+    ("https://www.nasdaq.com/feed/rssoutbound?category=Markets", "finance", "Nasdaq"),
     ("https://www.labiotech.eu/feed/", "pharma", "Labiotech"),
 ]
 
@@ -570,6 +571,9 @@ def merge_and_rank(items):
         if not k or not it["title"]:
             continue
         if is_personal_advice(it["title"]) or is_opinion(it["title"]) or is_stale(it):
+            continue
+        # CNBC 的 investingclub 是付费订阅内容，RSS 只给一句话 teaser，抓正文也抓不到，直接跳过
+        if "investingclub" in (it.get("url") or ""):
             continue
         text = it["title"] + " " + (it.get("summary") or "")
         hr = is_hengrui(text)
